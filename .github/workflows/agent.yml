@@ -1,0 +1,56 @@
+name: Agent Annonces
+
+# Déclencheurs : toutes les 5 minutes en cron + bouton manuel "Run workflow" sur GitHub
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+# Permissions : le job a besoin de pouvoir commit le seen_posts.json mis à jour
+permissions:
+  contents: write
+
+# Évite que deux runs se chevauchent (un cycle peut prendre > 5 min si beaucoup
+# de posts à analyser via l'API Claude). cancel-in-progress: false = on attend
+# la fin du run en cours plutôt que de l'annuler.
+concurrency:
+  group: agent-annonces-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    name: Polling Truth Social + analyse + Telegram
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout du repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Installation des dépendances
+        run: pip install -r requirements.txt
+
+      - name: Lancement de l'agent (un seul cycle)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python main.py --once
+
+      - name: Commit du seen_posts.json mis à jour
+        run: |
+          git config user.name "agent-annonces-bot"
+          git config user.email "actions@github.com"
+          if git diff --quiet data/seen_posts.json; then
+            echo "Pas de changement à committer."
+          else
+            git add data/seen_posts.json
+            git commit -m "chore: update seen_posts.json [skip ci]"
+            git push
+          fi

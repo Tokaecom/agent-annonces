@@ -1,0 +1,15 @@
+# Dépendances Python du projet
+# À installer avec : pip install -r requirements.txt
+# (depuis le venv activé)
+
+# Pour faire des requêtes HTTP (vers l'API Telegram, plus tard vers d'autres sources)
+requests
+
+# Pour lire les secrets depuis le fichier .env
+python-dotenv
+
+# Pour parser les flux RSS (Truth Social via trumpstruth.org, plus tard ForexLive, banques centrales)
+feedparser
+
+# SDK officiel Anthropic pour appeler Claude (l'IA qui analyse les annonces)
+anthropic

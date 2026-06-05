@@ -1,0 +1,34 @@
+# Environnement virtuel Python
+venv/
+.venv/
+env/
+
+# Secrets et variables d'environnement
+.env
+.env.local
+*.env
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# Fichiers IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Fichiers OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs et données runtime
+*.log
+logs/
+data/local/
+tmp/
