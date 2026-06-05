@@ -36,18 +36,6 @@ jobs:
       - name: Installation des dépendances
         run: pip install -r requirements.txt
 
-      - name: Debug secrets (longueurs uniquement, pas de valeurs)
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          echo "TELEGRAM_BOT_TOKEN length: ${#TELEGRAM_BOT_TOKEN}"
-          echo "TELEGRAM_CHAT_ID length: ${#TELEGRAM_CHAT_ID}"
-          echo "ANTHROPIC_API_KEY length: ${#ANTHROPIC_API_KEY}"
-          if [[ "$ANTHROPIC_API_KEY" == sk-ant-* ]]; then echo "ANTHROPIC prefix: OK (commence par sk-ant-)"; else echo "ANTHROPIC prefix: PAS sk-ant-"; fi
-          if [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:.+$ ]]; then echo "TELEGRAM_BOT_TOKEN format: OK"; else echo "TELEGRAM_BOT_TOKEN format: KO"; fi
-
       - name: Lancement de l'agent (un seul cycle)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
