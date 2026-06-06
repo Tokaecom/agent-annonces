@@ -37,10 +37,11 @@ from dotenv import load_dotenv
 # protégé chaque main() avec `if __name__ == "__main__":`.
 # On récupère uniquement les fonctions dont on a besoin.
 from analyze_post import analyze_post
-from fetch_truth import load_seen_ids, save_seen_ids, RSS_URL
+from seen_store import load_seen_ids, save_seen_ids
+import fetch_truth
+import fetch_forexlive
 
-# feedparser pour parser le RSS directement dans main.py (plutôt que de re-importer
-# toute la logique main() de fetch_truth.py qui contient de l'affichage console)
+# feedparser pour parser le RSS directement dans main.py
 import feedparser
 
 # Force l'encoding UTF-8 sur la sortie console.
@@ -64,6 +65,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # 5 minutes = 300 secondes. Bon équilibre réactivité / charge serveur.
 POLL_INTERVAL_SECONDS = 5 * 60
 
+# Pré-filtre côté script (V1.1) : un post < MIN_POST_LENGTH chars est
+# considéré comme inanalysable (RT vide, post juste un lien, etc.) et
+# n'est PAS envoyé à Claude. Économie de tokens (~30-50 % sur Trump).
+MIN_POST_LENGTH = 50
+
 # Vérifications de sécurité au démarrage
 if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("COLLE_ICI"):
     print("ERREUR : TELEGRAM_BOT_TOKEN n'est pas configuré dans .env")
@@ -72,6 +78,28 @@ if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("COLLE_ICI"):
 if not TELEGRAM_CHAT_ID:
     print("ERREUR : TELEGRAM_CHAT_ID n'est pas configuré dans .env")
     sys.exit(1)
+
+
+# ============================================================
+# 2.bis. CATALOGUE DES SOURCES
+# ============================================================
+# Pour ajouter une nouvelle source (Powell, Lagarde, BCE...), il suffit
+# d'ajouter un dict ici. Les modules fetch_*.py exposent juste RSS_URL
+# et SEEN_FILE, ce qui rend l'ajout d'une source ultra rapide.
+SOURCES = [
+    {
+        "name": "Trump Truth Social",
+        "rss_url": fetch_truth.RSS_URL,
+        "seen_file": fetch_truth.SEEN_FILE,
+        "telegram_label": "📢 Trump Truth Social",
+    },
+    {
+        "name": "ForexLive",
+        "rss_url": fetch_forexlive.RSS_URL,
+        "seen_file": fetch_forexlive.SEEN_FILE,
+        "telegram_label": "📢 ForexLive",
+    },
+]
 
 
 # ============================================================
@@ -113,16 +141,20 @@ def send_telegram(text: str) -> bool:
 # 4. FORMATAGE DU MESSAGE D'ALERTE (format spec V1)
 # ============================================================
 
-def format_alert_message(post_entry, analysis: dict) -> str:
+def format_alert_message(post_entry, analysis: dict, source_label: str) -> str:
     """
     Construit le message Telegram à partir du post original et de l'analyse Claude.
     Format spec V1 validé le 02/06/2026.
 
     post_entry : objet du flux RSS (avec .summary, .link, .published, etc.)
     analysis : dict retourné par analyze_post() (contient is_relevant, reason, etc.)
+    source_label : nom de la source pour le header Telegram (ex: "📢 ForexLive")
     """
     # Extraction des champs du post RSS avec defaults safe
-    verbatim = getattr(post_entry, "summary", "(contenu vide)")
+    # Sur ForexLive, le titre est plus informatif que le summary (qui peut être tronqué).
+    title = getattr(post_entry, "title", "")
+    summary_text = getattr(post_entry, "summary", "")
+    verbatim = title if title else (summary_text if summary_text else "(contenu vide)")
     link = getattr(post_entry, "link", "")
     published = getattr(post_entry, "published", "(date inconnue)")
 
@@ -134,7 +166,7 @@ def format_alert_message(post_entry, analysis: dict) -> str:
     reason = analysis.get("reason", "")
 
     # Construction du message (format spec V1)
-    message = f"""📢 Trump Truth Social — {published}
+    message = f"""{source_label} — {published}
 
 "{verbatim}"
 
@@ -156,29 +188,61 @@ def format_alert_message(post_entry, analysis: dict) -> str:
 
 
 # ============================================================
-# 5. TRAITEMENT D'UN CYCLE (un poll RSS)
+# 4.bis. PRE-FILTRAGE POSTS COURTS (V1.1)
 # ============================================================
 
-def process_cycle() -> dict:
+def is_post_worth_analyzing(post_text: str) -> bool:
     """
-    Effectue un cycle complet :
-      1. Récupère le flux RSS
+    Retourne True si le post mérite d'être envoyé à Claude.
+    Filtre côté script pour économiser des tokens API sur les posts vides
+    ou trop courts (RT sans texte, juste un lien, etc.).
+
+    Le seuil MIN_POST_LENGTH = 50 chars est calibré pour laisser passer
+    les courtes annonces utiles (ex: "BCE relève taux à 4 %") tout en
+    bloquant les RT vides et les emojis isolés.
+    """
+    if not post_text:
+        return False
+    if len(post_text.strip()) < MIN_POST_LENGTH:
+        return False
+    return True
+
+
+# ============================================================
+# 5. TRAITEMENT D'UNE SOURCE (un cycle pour une source donnée)
+# ============================================================
+
+def process_source(source: dict) -> dict:
+    """
+    Effectue un cycle complet POUR UNE SOURCE :
+      1. Récupère le flux RSS de la source
       2. Identifie les nouveaux posts
-      3. Pour chaque nouveau : analyse Claude + envoi Telegram si pertinent
-      4. Marque tous les posts du flux comme vus
+      3. Pré-filtre les posts trop courts (économie tokens Claude)
+      4. Pour chaque nouveau gardé : analyse Claude + envoi Telegram si pertinent
+      5. Marque tous les posts du flux comme vus pour cette source
+
+    source : dict avec les clés 'name', 'rss_url', 'seen_file', 'telegram_label'
 
     Retourne un dict de stats pour le log final.
     """
     stats = {
         "new_posts": 0,
+        "skipped_short": 0,
         "relevant": 0,
         "telegram_sent": 0,
         "errors": 0,
     }
 
+    name = source["name"]
+    rss_url = source["rss_url"]
+    seen_file = source["seen_file"]
+    telegram_label = source["telegram_label"]
+
+    print(f"\n   ── Source : {name} ──")
+
     # Étape 1 : récupération du flux RSS
     try:
-        feed = feedparser.parse(RSS_URL)
+        feed = feedparser.parse(rss_url)
     except Exception as e:
         print(f"   [RSS ERREUR] {e}")
         stats["errors"] += 1
@@ -194,19 +258,19 @@ def process_cycle() -> dict:
         return stats
 
     # Étape 2 : identification des nouveaux posts
-    seen_ids = load_seen_ids()
+    seen_ids = load_seen_ids(seen_file)
     is_first_run = len(seen_ids) == 0
     new_entries = [e for e in feed.entries if e.get("id") not in seen_ids]
 
     stats["new_posts"] = len(new_entries)
 
     # Cas spécial premier run : on marque tout comme vu sans analyser.
-    # Sinon on enverrait potentiellement 100 alertes Telegram d'un coup !
+    # Sinon on enverrait potentiellement des dizaines d'alertes d'un coup !
     if is_first_run:
-        print(f"   [PREMIER RUN] {len(feed.entries)} posts dans le flux, tous marqués comme vus.")
-        print("   Aucune analyse ni alerte. Les vrais nouveaux posts seront traités au prochain cycle.")
+        print(f"   [PREMIER RUN {name}] {len(feed.entries)} posts dans le flux, tous marqués vus.")
+        print(f"   Aucune analyse ni alerte. Les vrais nouveaux posts seront traités au prochain cycle.")
         all_ids = [e.get("id") for e in feed.entries if e.get("id")]
-        save_seen_ids(all_ids)
+        save_seen_ids(seen_file, all_ids)
         return stats
 
     if not new_entries:
@@ -215,17 +279,23 @@ def process_cycle() -> dict:
 
     # Étape 3 : analyse de chaque nouveau post
     for entry in new_entries:
-        post_text = getattr(entry, "summary", "") or getattr(entry, "title", "")
-        if not post_text:
-            print("   [SKIP] Post vide, ignoré.")
+        # Combine title + summary pour avoir le maximum de contexte texte.
+        # Sur ForexLive, le titre est souvent l'info principale.
+        title = getattr(entry, "title", "")
+        summary_text = getattr(entry, "summary", "")
+        post_text = f"{title}\n\n{summary_text}".strip()
+
+        # Pré-filtre côté script : skip les posts trop courts (V1.1)
+        if not is_post_worth_analyzing(post_text):
+            stats["skipped_short"] += 1
             continue
 
         print(f"\n   ➡️  Nouveau post détecté ({getattr(entry, 'published', '?')})")
-        print(f"       Extrait : {post_text[:120]}...")
+        print(f"       Extrait : {post_text[:120].replace(chr(10), ' ')}...")
 
-        # Appel à Claude
+        # Appel à Claude avec le nom de la source pour qu'il s'adapte au format
         try:
-            analysis = analyze_post(post_text)
+            analysis = analyze_post(post_text, source_name=name)
         except Exception as e:
             print(f"       [Claude ERREUR] {e}")
             stats["errors"] += 1
@@ -241,7 +311,7 @@ def process_cycle() -> dict:
             print(f"       🚨 PERTINENT : {analysis.get('reason')}")
 
             # Construction et envoi du message Telegram
-            message = format_alert_message(entry, analysis)
+            message = format_alert_message(entry, analysis, telegram_label)
             if send_telegram(message):
                 stats["telegram_sent"] += 1
                 print("       ✅ Alerte Telegram envoyée.")
@@ -251,13 +321,41 @@ def process_cycle() -> dict:
         else:
             print(f"       💤 Non pertinent : {analysis.get('reason')}")
 
-    # Étape 4 : marquage de TOUS les posts du flux comme vus
-    # (même les non pertinents, pour ne pas les ré-analyser au prochain cycle)
+    # Étape 4 : marquage de TOUS les posts du flux comme vus pour cette source
     all_current_ids = [e.get("id") for e in feed.entries if e.get("id")]
     updated_seen = list(set(seen_ids + all_current_ids))
-    save_seen_ids(updated_seen)
+    save_seen_ids(seen_file, updated_seen)
 
     return stats
+
+
+def process_cycle() -> dict:
+    """
+    Effectue un cycle complet sur TOUTES les sources configurées.
+    Agrège les stats de chaque source pour le log final.
+    """
+    global_stats = {
+        "new_posts": 0,
+        "skipped_short": 0,
+        "relevant": 0,
+        "telegram_sent": 0,
+        "errors": 0,
+    }
+
+    for source in SOURCES:
+        try:
+            source_stats = process_source(source)
+        except Exception as e:
+            # Filet de sécurité : si une source plante, on passe aux autres
+            print(f"   [SOURCE {source['name']} ERREUR INATTENDUE] {e}")
+            global_stats["errors"] += 1
+            continue
+
+        # Agrégation des stats
+        for key, value in source_stats.items():
+            global_stats[key] = global_stats.get(key, 0) + value
+
+    return global_stats
 
 
 # ============================================================
@@ -277,7 +375,9 @@ def main():
         print(" Mode : ONE-SHOT (un seul cycle, puis exit)")
     else:
         print(f" Mode : BOUCLE (polling toutes les {POLL_INTERVAL_SECONDS // 60} min)")
-    print(f" Source : {RSS_URL}")
+    print(f" Sources surveillées ({len(SOURCES)}) :")
+    for src in SOURCES:
+        print(f"   - {src['name']} → {src['rss_url']}")
     print(f" Telegram chat : {TELEGRAM_CHAT_ID}")
     if not run_once:
         print(" Ctrl+C pour arrêter.")
@@ -293,7 +393,8 @@ def main():
         try:
             stats = process_cycle()
             print(
-                f"   ↳ Bilan : {stats['new_posts']} nouveau(x), "
+                f"\n   ↳ Bilan global cycle : {stats['new_posts']} nouveau(x), "
+                f"{stats['skipped_short']} skippé(s) court(s), "
                 f"{stats['relevant']} pertinent(s), "
                 f"{stats['telegram_sent']} Telegram envoyé(s), "
                 f"{stats['errors']} erreur(s)."

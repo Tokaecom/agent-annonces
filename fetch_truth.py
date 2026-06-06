@@ -15,17 +15,14 @@ Lance ce script avec : python fetch_truth.py
 # ============================================================
 # 1. IMPORTS
 # ============================================================
-# - feedparser : pour parser les flux RSS facilement
-# - json : pour lire/écrire notre fichier de mémoire des posts déjà vus
-# - os : pour gérer les chemins de fichiers
-# - sys : pour quitter proprement en cas d'erreur
-# - datetime : pour afficher des dates lisibles
 
 import feedparser
-import json
-import os
 import sys
 from datetime import datetime
+
+# Fonctions de mémoire (seen_ids) déléguées au module partagé seen_store.
+# Ça évite la duplication entre fetch_truth.py et fetch_forexlive.py.
+from seen_store import load_seen_ids, save_seen_ids
 
 # Force l'encoding UTF-8 sur la sortie console.
 # Sans ça, les emojis (📢, 🔗, etc.) plantent sur Windows (console cp1252 par défaut).
@@ -41,43 +38,12 @@ if hasattr(sys.stdout, "reconfigure"):
 # Ce flux agrège TOUS les posts de Trump sur Truth Social.
 RSS_URL = "https://www.trumpstruth.org/feed"
 
-# Chemin du fichier où on stocke les IDs des posts qu'on a déjà traités.
-# Ça nous évite de re-afficher les mêmes posts à chaque exécution.
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SEEN_FILE = os.path.join(SCRIPT_DIR, "data", "seen_posts.json")
+# Nom du fichier de mémoire pour CETTE source.
+# seen_store ajoute le préfixe data/ automatiquement.
+SEEN_FILE = "seen_posts.json"
 
 # Combien de posts on affiche au premier run (pour ne pas spammer la console).
 FIRST_RUN_DISPLAY = 5
-
-
-# ============================================================
-# 3. FONCTIONS UTILITAIRES
-# ============================================================
-
-def load_seen_ids():
-    """
-    Charge la liste des IDs de posts déjà traités depuis le fichier JSON.
-    Si le fichier n'existe pas (premier run), retourne une liste vide.
-    """
-    if not os.path.exists(SEEN_FILE):
-        return []
-    try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"Avertissement : impossible de lire {SEEN_FILE} ({e})")
-        print("On repart de zéro.")
-        return []
-
-
-def save_seen_ids(ids):
-    """
-    Sauvegarde la liste des IDs déjà traités dans le fichier JSON.
-    Crée le dossier data/ si besoin.
-    """
-    os.makedirs(os.path.dirname(SEEN_FILE), exist_ok=True)
-    with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(ids, f, indent=2, ensure_ascii=False)
 
 
 def format_post(entry):
@@ -128,7 +94,7 @@ def main():
     print(f"Flux récupéré : {len(feed.entries)} posts disponibles dans le flux.")
 
     # Étape 2 : on charge l'historique des posts déjà vus
-    seen_ids = load_seen_ids()
+    seen_ids = load_seen_ids(SEEN_FILE)
     is_first_run = len(seen_ids) == 0
 
     if is_first_run:
@@ -162,7 +128,7 @@ def main():
 
     # On fusionne avec l'historique existant, sans doublons
     updated_seen = list(set(seen_ids + all_current_ids))
-    save_seen_ids(updated_seen)
+    save_seen_ids(SEEN_FILE, updated_seen)
 
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Mémoire mise à jour : {len(updated_seen)} posts marqués comme vus au total.")
 

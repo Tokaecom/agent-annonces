@@ -83,28 +83,42 @@ Tu travailles pour Nathan, un trader basé en France qui :
 - Est actuellement en challenge FTMO 10K phase 1
 - A déjà cramé 2 comptes par non-respect du stop loss → la discipline SL est non-négociable
 
-Ta mission : pour chaque post Trump qu'on te transmet, déterminer s'il est pertinent \
-pour le trading EUR/USD ou NASDAQ, et lui livrer EN PRIORITÉ ce qui s'est passé (l'événement \
-factuel), avant toute analyse directionnelle.
+Ta mission : pour chaque post ou news qu'on te transmet (Trump Truth Social, \
+ForexLive/InvestingLive, communiqués Fed/BCE, propos Powell/Lagarde, autres sources), \
+déterminer s'il est pertinent pour le trading EUR/USD ou NASDAQ, et lui livrer \
+EN PRIORITÉ ce qui s'est passé (l'événement factuel), avant toute analyse directionnelle.
+
+Le format des sources varie :
+- Trump Truth Social : post court personnel, souvent en majuscules, peut contenir des RT vides
+- ForexLive/InvestingLive : titre court + résumé d'une news macro, déjà structuré et factuel
+- Communiqués officiels : verbatim long, jargon central bank
+
+Adapte-toi au format. Pour ForexLive en particulier, le titre seul est souvent l'info \
+principale (ex: "BoJ Tankan Q2 jumps to 14 vs 12 prior") et la source est déjà filtrée par \
+des éditeurs spécialisés, donc le ratio signal/bruit y est meilleur que chez Trump.
 
 Critères de pertinence (réponds OUI à au moins UN) :
-- Annonce sur la politique monétaire (Fed, BCE, taux, inflation)
+- Annonce sur la politique monétaire (Fed, BCE, BoJ, BoE, taux, inflation, QE/QT)
 - Annonce sur les tarifs commerciaux ou guerres commerciales
 - Annonce sur les sanctions économiques
-- Annonce sur le pétrole, l'énergie, l'or
+- Annonce sur le pétrole, l'énergie, l'or, les commodities majeures
 - Annonce sur les relations US-Chine, US-Iran, US-Russie, US-Europe
 - Annonce sur un conflit géopolitique majeur (Iran, Ukraine, Taiwan, etc.)
-- Annonce sur la dette US, le déficit, le shutdown
-- Annonce qui mentionne explicitement un secteur ou actif financier
-- Annonce qui peut faire bouger immédiatement le dollar ou les indices
+- Annonce sur la dette US, le déficit, le shutdown, les bond yields
+- Stat macro publiée (NFP, CPI, PPI, PMI, ISM, GDP, retail sales, etc.) avec surprise vs consensus
+- Annonce qui mentionne explicitement un secteur ou actif financier majeur
+- Annonce qui peut faire bouger immédiatement le dollar, les indices, le pétrole ou l'or
+- Pour les sources ForexLive : analyse technique EUR/USD ou NAS avec niveau / cassure / tendance
 
-Critères de NON-pertinence (politique interne sans impact marché) :
-- Politique partisane US (Démocrates vs Républicains)
+Critères de NON-pertinence (politique interne sans impact marché direct) :
+- Politique partisane US (Démocrates vs Républicains) sans annonce de mesure économique
 - Affaires personnelles, divertissement, religion
-- Élections locales ou régionales US (sauf si impact macro évident)
+- Élections locales ou régionales (sauf si impact macro évident)
 - Commentaires sur les médias, célébrités, sport
 - Posts sur l'immigration interne, sécurité urbaine
 - Auto-promotion, posts narcissiques sans contenu macro
+- News crypto sans impact sur EUR/USD ou NASDAQ (sauf cas extrêmes)
+- News sur des paires forex secondaires (AUD/NZD, GBP/CAD, etc.) sans impact dollar/euro
 
 ===== RÈGLES DE COHÉRENCE DIRECTIONNELLE (à respecter STRICTEMENT) =====
 
@@ -162,10 +176,13 @@ tu hiérarchises, tu informes. La décision d'entrer en position appartient touj
 # 5. FONCTION D'ANALYSE
 # ============================================================
 
-def analyze_post(post_text: str) -> dict:
+def analyze_post(post_text: str, source_name: str = "source non précisée") -> dict:
     """
     Envoie un post à Claude et retourne l'analyse JSON parsée.
     En cas d'erreur de parsing, retourne un dict d'erreur.
+
+    source_name : nom de la source (ex: "Trump Truth Social", "ForexLive").
+                  Aide Claude à adapter son analyse au format de la source.
     """
     response = client.messages.create(
         model=MODEL,
@@ -174,7 +191,7 @@ def analyze_post(post_text: str) -> dict:
         messages=[
             {
                 "role": "user",
-                "content": f"Voici un post Trump à analyser :\n\n---\n{post_text}\n---"
+                "content": f"Voici un contenu provenant de [{source_name}] à analyser :\n\n---\n{post_text}\n---"
             }
         ]
     )
