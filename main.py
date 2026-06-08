@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 # On récupère uniquement les fonctions dont on a besoin.
 from analyze_post import analyze_post
 from seen_store import load_seen_ids, save_seen_ids
+from topic_store import is_topic_recently_alerted, mark_topic_alerted, COOLDOWN_MINUTES
 import fetch_truth
 import fetch_forexlive
 
@@ -143,48 +144,66 @@ def send_telegram(text: str) -> bool:
 
 def format_alert_message(post_entry, analysis: dict, source_label: str) -> str:
     """
-    Construit le message Telegram à partir du post original et de l'analyse Claude.
-    Format spec V1 validé le 02/06/2026.
+    Construit le message Telegram au format simplifié V2 (08/06/2026).
 
-    post_entry : objet du flux RSS (avec .summary, .link, .published, etc.)
-    analysis : dict retourné par analyze_post() (contient is_relevant, reason, etc.)
-    source_label : nom de la source pour le header Telegram (ex: "📢 ForexLive")
+    Format : Source + Date/heure Paris + Titre + Texte nettoyé HTML.
+    Pas de contexte, pas d'impacts, pas de niveaux, pas de lien, pas de SL reminder.
+    Choix de Nathan : "juste la date l'heure et le texte de l'annonce, rien de plus".
+
+    L'intelligence (filtrage pertinence + déduplication) se fait avant l'appel
+    à cette fonction, pas dans le message lui-même.
     """
-    # Extraction des champs du post RSS avec defaults safe
-    # Sur ForexLive, le titre est plus informatif que le summary (qui peut être tronqué).
+    import re
+    from email.utils import parsedate_to_datetime
+
+    # Extraction des champs RSS
     title = getattr(post_entry, "title", "")
     summary_text = getattr(post_entry, "summary", "")
-    verbatim = title if title else (summary_text if summary_text else "(contenu vide)")
-    link = getattr(post_entry, "link", "")
-    published = getattr(post_entry, "published", "(date inconnue)")
+    published_raw = getattr(post_entry, "published", "")
 
-    # Extraction des champs de l'analyse Claude
-    summary = analysis.get("summary_for_telegram", "(résumé non disponible)")
-    impact_eurusd = analysis.get("impact_eurusd", "n_a")
-    impact_nasdaq = analysis.get("impact_nasdaq", "n_a")
-    key_levels = analysis.get("key_levels_to_watch", "(non précisé)")
-    reason = analysis.get("reason", "")
+    # Nettoyage HTML basique du summary (ForexLive contient des <p>, <a>, etc.)
+    summary_clean = re.sub(r"<[^>]+>", "", summary_text).strip()
+    # Décodage de quelques entités HTML courantes
+    summary_clean = (
+        summary_clean
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+    )
+    # Limite à 1500 caractères pour rester lisible (Telegram max = 4096)
+    if len(summary_clean) > 1500:
+        summary_clean = summary_clean[:1500].rsplit(" ", 1)[0] + "..."
 
-    # Construction du message (format spec V1)
-    message = f"""{source_label} — {published}
+    # Conversion de la date RFC 2822 vers Europe/Paris au format DD/MM HH:MM
+    try:
+        dt = parsedate_to_datetime(published_raw)
+        try:
+            from zoneinfo import ZoneInfo
+            dt_paris = dt.astimezone(ZoneInfo("Europe/Paris"))
+        except Exception:
+            # Fallback : UTC+2 (heure d'été Europe) si zoneinfo indisponible
+            from datetime import timedelta, timezone
+            dt_paris = dt.astimezone(timezone(timedelta(hours=2)))
+        timestamp_str = dt_paris.strftime("%d/%m %H:%M")
+    except Exception:
+        # Fallback : heure actuelle si parsing impossible
+        timestamp_str = datetime.now().strftime("%d/%m %H:%M")
 
-"{verbatim}"
+    # Construction du corps du message
+    # Si le titre est différent du début du summary, on combine les deux.
+    # Sinon on garde juste le summary (Trump : pas de title, ForexLive : title + summary)
+    if title and summary_clean and not summary_clean.lower().startswith(title.lower()[:30]):
+        body = f"{title}\n\n{summary_clean}"
+    elif title:
+        body = title
+    else:
+        body = summary_clean if summary_clean else "(contenu vide)"
 
-💡 Contexte : {reason}
-
-📊 Marchés impactés :
-  • EUR/USD : {impact_eurusd}
-  • NASDAQ : {impact_nasdaq}
-
-🎯 Niveaux à surveiller : {key_levels}
-
-📝 Résumé : {summary}
-
-⚠️ Reminder discipline : SL placé AVANT entry, jamais déplacé. Si SL touché, on prend la perte et on ferme.
-
-🔗 {link}"""
-
-    return message
+    # Format final ultra-simple
+    return f"{source_label} — {timestamp_str}\n\n{body}"
 
 
 # ============================================================
@@ -229,6 +248,7 @@ def process_source(source: dict) -> dict:
         "new_posts": 0,
         "skipped_short": 0,
         "relevant": 0,
+        "skipped_doublon": 0,
         "telegram_sent": 0,
         "errors": 0,
     }
@@ -308,13 +328,22 @@ def process_source(source: dict) -> dict:
 
         if analysis.get("is_relevant"):
             stats["relevant"] += 1
-            print(f"       🚨 PERTINENT : {analysis.get('reason')}")
+            topic = analysis.get("topic", "other")
+            print(f"       🚨 PERTINENT : {analysis.get('reason')} [topic={topic}]")
 
-            # Construction et envoi du message Telegram
+            # Anti-doublon thématique : si même topic déjà alerté < 30 min, on skip.
+            # Ça évite de spammer 8 alertes pour le même événement raconté sous différents angles.
+            if is_topic_recently_alerted(topic):
+                stats["skipped_doublon"] += 1
+                print(f"       🔁 Doublon thématique : topic '{topic}' déjà alerté dans les {COOLDOWN_MINUTES} dernières min, skip.")
+                continue
+
+            # Construction et envoi du message Telegram (format V2 simplifié)
             message = format_alert_message(entry, analysis, telegram_label)
             if send_telegram(message):
                 stats["telegram_sent"] += 1
-                print("       ✅ Alerte Telegram envoyée.")
+                mark_topic_alerted(topic)  # On enregistre l'alerte pour bloquer les doublons futurs
+                print(f"       ✅ Alerte Telegram envoyée. Topic '{topic}' marqué.")
             else:
                 stats["errors"] += 1
                 print("       ❌ Envoi Telegram échoué.")
@@ -338,6 +367,7 @@ def process_cycle() -> dict:
         "new_posts": 0,
         "skipped_short": 0,
         "relevant": 0,
+        "skipped_doublon": 0,
         "telegram_sent": 0,
         "errors": 0,
     }
@@ -396,6 +426,7 @@ def main():
                 f"\n   ↳ Bilan global cycle : {stats['new_posts']} nouveau(x), "
                 f"{stats['skipped_short']} skippé(s) court(s), "
                 f"{stats['relevant']} pertinent(s), "
+                f"{stats['skipped_doublon']} doublon(s) thématique(s), "
                 f"{stats['telegram_sent']} Telegram envoyé(s), "
                 f"{stats['errors']} erreur(s)."
             )

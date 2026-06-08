@@ -155,6 +155,40 @@ Pour "key_levels_to_watch" :
 
 Nathan a ses propres niveaux sur ses graphs. Il n'a pas besoin que tu inventes les siens, il a besoin de savoir QUELS ACTIFS surveiller et DANS QUEL SENS.
 
+===== TOPIC (pour déduplication) =====
+
+Tu DOIS aussi attribuer un "topic" à chaque post pertinent. Ce topic sert à éviter
+d'envoyer 8 alertes différentes pour le MÊME événement raconté sous différents angles
+(ex: 8 posts ForexLive sur le cessez-le-feu Iran-Israël = 1 seule alerte utile pour Nathan).
+
+Liste OBLIGATOIRE des topics possibles (choisis le plus pertinent) :
+- "iran_israel"      : Conflit / cessez-le-feu / escalade Iran-Israël
+- "iran_us"          : Relations Iran-US (négos, sanctions, MOU)
+- "china_us"         : Tensions / accords US-Chine (tarifs, Taiwan, semi-conducteurs)
+- "russia_ukraine"   : Guerre Ukraine, sanctions Russie
+- "nfp"              : NFP US (rapport emploi)
+- "cpi_us"           : CPI US (inflation consommateur)
+- "ppi_us"           : PPI US (inflation producteur)
+- "ism_pmi_us"       : ISM / PMI / activité US
+- "gdp_us"           : GDP / croissance US
+- "retail_sales_us"  : Retail sales US
+- "fed_decision"     : Décision Fed sur les taux (FOMC)
+- "fed_speech"       : Discours / propos d'un membre de la Fed (Powell, Warsh, etc.)
+- "ecb_decision"     : Décision BCE sur les taux
+- "ecb_speech"       : Discours / propos d'un membre BCE (Lagarde, etc.)
+- "boj"              : Bank of Japan (taux, intervention forex)
+- "boe"              : Bank of England
+- "oil"              : Pétrole (production, sanctions, embargo, prix)
+- "gold"             : Or (achats banques centrales, refuge)
+- "eurusd_technical" : Analyse technique pure EUR/USD (cassure niveau, etc.)
+- "nasdaq_technical" : Analyse technique pure NASDAQ
+- "tariffs"          : Politique tarifaire US (autre que China)
+- "geopolitical_other": Autre événement géopolitique majeur
+- "macro_other"      : Autre stat macro
+- "other"            : Si vraiment aucun ne colle (rare)
+
+Si is_relevant = false, mets "topic": "other".
+
 ===== FORMAT DE RÉPONSE =====
 
 Tu réponds UNIQUEMENT en JSON valide, sans aucun texte avant ou après.
@@ -162,6 +196,7 @@ Tu réponds UNIQUEMENT en JSON valide, sans aucun texte avant ou après.
 {
   "is_relevant": true ou false,
   "reason": "explication courte (1 phrase) de pourquoi pertinent ou pas",
+  "topic": "un des topics de la liste ci-dessus",
   "impact_eurusd": "bullish" | "bearish" | "neutral" | "n_a",
   "impact_nasdaq": "bullish" | "bearish" | "neutral" | "n_a",
   "key_levels_to_watch": "actifs et zones qualitatives à surveiller (PAS DE CHIFFRES), ou null si non-pertinent",

@@ -43,14 +43,15 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python main.py --once
 
-      - name: Commit du seen_posts.json mis à jour
+      - name: Commit des fichiers d'état mis à jour
         run: |
           git config user.name "agent-annonces-bot"
           git config user.email "actions@github.com"
-          if git diff --quiet data/seen_posts.json; then
+          # On inclut seen_posts.json (Trump), seen_forexlive.json (ForexLive) et recent_topics.json (anti-doublon)
+          git add data/seen_posts.json data/seen_forexlive.json data/recent_topics.json 2>/dev/null || true
+          if git diff --cached --quiet; then
             echo "Pas de changement à committer."
           else
-            git add data/seen_posts.json
-            git commit -m "chore: update seen_posts.json [skip ci]"
+            git commit -m "chore: update state files [skip ci]"
             git push
           fi
